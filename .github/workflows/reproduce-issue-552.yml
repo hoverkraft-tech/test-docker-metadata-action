@@ -1,0 +1,138 @@
+name: 'Reproduce Issue #552 - Detached HEAD'
+
+# This workflow reproduces docker/metadata-action issue #552:
+# "Action fails: Cannot find detached HEAD ref in 'HEAD'"
+# https://github.com/docker/metadata-action/issues/552
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to checkout (branch, tag, or commit SHA)'
+        required: true
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test-detached-head:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository at specified ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Get Git information
+        run: |
+          echo "Current HEAD: $(git rev-parse HEAD)"
+          echo "Current ref: ${{ github.event.inputs.ref }}"
+          echo "Git status:"
+          git status
+          echo ""
+          echo "Checking if in detached HEAD state..."
+          if git symbolic-ref -q HEAD >/dev/null; then
+            echo "✓ On a branch: $(git symbolic-ref --short HEAD)"
+            echo "is_detached=false" >> "$GITHUB_ENV"
+          else
+            echo "⚠ In detached HEAD state (SHA checkout)"
+            echo "is_detached=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Determine ref type
+        id: check-ref
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          
+          if git show-ref --verify -- "refs/heads/$REF" >/dev/null 2>&1; then
+            echo "Type: Branch"
+            echo "is_sha=false" >> "$GITHUB_OUTPUT"
+            echo "ref_type=branch" >> "$GITHUB_OUTPUT"
+          elif git show-ref --verify -- "refs/tags/$REF" >/dev/null 2>&1; then
+            echo "Type: Tag"
+            echo "is_sha=false" >> "$GITHUB_OUTPUT"
+            echo "ref_type=tag" >> "$GITHUB_OUTPUT"
+          elif git rev-parse --verify "$REF" >/dev/null 2>&1; then
+            echo "Type: Commit SHA (will cause detached HEAD)"
+            echo "is_sha=true" >> "$GITHUB_OUTPUT"
+            echo "ref_type=sha" >> "$GITHUB_OUTPUT"
+          else
+            echo "Type: Unknown/Invalid"
+            echo "is_sha=false" >> "$GITHUB_OUTPUT"
+            echo "ref_type=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # This step will FAIL when checking out a SHA (detached HEAD)
+      # with error: "Cannot find detached HEAD ref in 'HEAD'"
+      - name: Docker metadata (with git context - REPRODUCES ISSUE)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          context: git
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event.inputs.ref == 'main' }}
+            type=ref,event=branch,enable=${{ steps.check-ref.outputs.ref_type == 'branch' }}
+            type=ref,event=tag,enable=${{ steps.check-ref.outputs.ref_type == 'tag' }}
+            type=sha,enable=${{ steps.check-ref.outputs.ref_type == 'sha' }},prefix=sha-
+
+      - name: Display metadata output
+        if: success() || failure()
+        run: |
+          echo "## Issue #552 Reproduction Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Input ref:** \`${{ github.event.inputs.ref }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Ref type:** ${{ steps.check-ref.outputs.ref_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Detached HEAD:** ${{ env.is_detached }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.check-ref.outputs.ref_type }}" = "sha" ]; then
+            echo "### ⚠️ Expected Behavior" >> $GITHUB_STEP_SUMMARY
+            echo "When checking out a commit SHA, Git enters a detached HEAD state." >> $GITHUB_STEP_SUMMARY
+            echo "The metadata-action with \`context: git\` should handle this case." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ steps.meta.outcome }}" = "success" ]; then
+            echo "### ✅ Metadata extraction succeeded" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Metadata extraction failed (Issue #552)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "This confirms the issue: metadata-action fails in detached HEAD state." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Build Docker image
+        if: steps.meta.outcome == 'success'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

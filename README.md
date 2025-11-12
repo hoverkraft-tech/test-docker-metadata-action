@@ -1,114 +1,112 @@
 # test-docker-metadata-action
 
-Test repository to validate docker/metadata-action behavior and reproduce issue [#552](https://github.com/docker/metadata-action/issues/552).
+Test repository to reproduce [docker/metadata-action issue #552](https://github.com/docker/metadata-action/issues/552): **"Action fails: Cannot find detached HEAD ref in 'HEAD'"**
 
-## Overview
+## Issue Description
 
-This repository contains a minimal setup to test the `docker/metadata-action` GitHub Action. It includes:
+The `docker/metadata-action` fails when used with `context: git` and the repository is in a detached HEAD state (e.g., when checking out a commit SHA instead of a branch or tag).
 
-- A simple Dockerfile for building test images
-- A GitHub workflow that demonstrates various metadata extraction scenarios
-- Automated testing for different Git events (branches, tags, PRs)
-
-## Repository Structure
-
+**Error message:**
 ```
-.
-├── Dockerfile                          # Simple Alpine-based test image
-├── .github/
-│   └── workflows/
-│       └── docker-metadata-test.yml   # Main workflow file
-└── README.md                          # This file
+Error: Cannot find detached HEAD ref in "HEAD"
 ```
 
-## Workflow Configuration
+## Problem Context
 
-The workflow (`docker-metadata-test.yml`) is triggered by:
+When a workflow:
+1. Checks out a specific commit SHA (not a branch or tag)
+2. Uses `docker/metadata-action` with `context: git`
 
-- **Push events** on `main` and `feature/**` branches
-- **Tag pushes** matching `v*.*.*` pattern (e.g., v1.0.0)
-- **Pull requests** to `main` branch
-- **Manual dispatch** via GitHub UI
+The action fails because Git is in a detached HEAD state, and the action cannot determine the ref name.
 
-### Metadata Tags Generated
+## Repository Contents
 
-The workflow is configured to generate the following Docker image tags:
+- **Dockerfile** - Simple Alpine-based test image
+- **`.github/workflows/reproduce-issue-552.yml`** - Workflow that reproduces the issue
+- **`.github/workflows/docker-metadata-test.yml`** - General metadata testing workflow
 
-- `type=ref,event=branch` - Branch name for branch pushes
-- `type=ref,event=pr` - PR number for pull requests
-- `type=semver,pattern={{version}}` - Full semantic version (e.g., 1.0.0)
-- `type=semver,pattern={{major}}.{{minor}}` - Major.minor version (e.g., 1.0)
-- `type=semver,pattern={{major}}` - Major version only (e.g., 1)
-- `type=sha,prefix=sha-` - Git SHA with prefix
-- `type=raw,value=latest` - Latest tag (only on default branch)
+## How to Reproduce Issue #552
 
-### Image Location
-
-Images are pushed to GitHub Container Registry (GHCR) at:
-```
-ghcr.io/hoverkraft-tech/test-docker-metadata-action
-```
-
-## Testing Scenarios
-
-### Test Branch Pushes
-
-```bash
-git checkout -b feature/test-branch
-git commit --allow-empty -m "Test commit"
-git push origin feature/test-branch
-```
-
-Expected tags: `feature-test-branch`, `sha-<commit-hash>`
-
-### Test Semantic Version Tags
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-Expected tags: `1.0.0`, `1.0`, `1`, `latest`, `sha-<commit-hash>`
-
-### Test Pull Requests
-
-Create a PR to the `main` branch through GitHub UI or CLI.
-
-Expected tags: `pr-<number>`, `sha-<commit-hash>`
-
-## Reproducing Issue #552
-
-This repository is set up to reproduce the behavior described in docker/metadata-action issue #552. 
-
-To reproduce:
-1. Follow the testing scenarios above
-2. Check the workflow run output in the "Actions" tab
-3. Review the "Display metadata" step for generated tags and labels
-4. Compare actual behavior with expected behavior
-
-## Viewing Results
-
-After each workflow run:
-
-1. Navigate to the **Actions** tab in this repository
-2. Click on the latest workflow run
-3. Expand the **Display metadata** step to see:
-   - Generated tags
-   - Applied labels
-   - Complete JSON metadata output
-
-## Manual Testing
-
-You can manually trigger the workflow:
+### Method 1: Manual Workflow Dispatch (Recommended)
 
 1. Go to the **Actions** tab
-2. Select "Docker Metadata Action Test"
-3. Click "Run workflow"
-4. Choose a branch and click "Run workflow"
+2. Select **"Reproduce Issue #552 - Detached HEAD"** workflow
+3. Click **"Run workflow"**
+4. In the "Git ref to checkout" field, enter a **commit SHA** (e.g., the first 7-40 characters of any commit hash)
+5. Click **"Run workflow"**
+
+**Expected result:** The workflow will fail at the "Docker metadata" step with the error:
+```
+Error: Cannot find detached HEAD ref in "HEAD"
+```
+
+### Method 2: Get a Commit SHA
+
+To find a commit SHA to test with:
+
+```bash
+# Clone the repository
+git clone https://github.com/hoverkraft-tech/test-docker-metadata-action.git
+cd test-docker-metadata-action
+
+# Get the SHA of the latest commit
+git rev-parse HEAD
+
+# Or get short SHA
+git rev-parse --short HEAD
+```
+
+Then use this SHA in the workflow dispatch.
+
+### Method 3: Using Different Refs
+
+The workflow also works with branches and tags for comparison:
+
+- **Branch:** Enter `main` or `feature/test` → Should work ✅
+- **Tag:** Enter `v1.0.0` (if exists) → Should work ✅
+- **SHA:** Enter a commit hash → Will fail ❌ (reproduces issue #552)
+
+## Workflow Behavior
+
+The `reproduce-issue-552.yml` workflow:
+
+1. ✅ Checks out the repository at the specified ref
+2. ✅ Detects whether the checkout resulted in a detached HEAD state
+3. ✅ Determines the ref type (branch, tag, or SHA)
+4. ❌ **Attempts to extract metadata with `context: git`** ← This is where it fails for SHAs
+5. 📊 Displays results in the workflow summary
+
+## Expected vs Actual Behavior
+
+### Expected Behavior
+
+The `docker/metadata-action` should handle detached HEAD state gracefully, similar to how it handles branches and tags.
+
+### Actual Behavior
+
+When a commit SHA is checked out:
+- Git enters detached HEAD state
+- `docker/metadata-action` with `context: git` fails with "Cannot find detached HEAD ref in 'HEAD'"
+
+## Workaround
+
+Until this issue is fixed, potential workarounds include:
+
+1. **Avoid using commit SHAs directly** - Always use branch names or tags
+2. **Use `context: github` instead of `context: git`** (if applicable)
+3. **Create a temporary branch/tag** before running metadata-action
+
+## Additional Testing
+
+The repository also includes `docker-metadata-test.yml` for general testing of the metadata-action with various trigger types:
+
+- Push to branches (main, feature/*)
+- Push tags (v*.*.*)
+- Pull requests
+- Manual dispatch
 
 ## Links
 
-- [docker/metadata-action repository](https://github.com/docker/metadata-action)
-- [docker/metadata-action issue #552](https://github.com/docker/metadata-action/issues/552)
-- [Docker Build Push Action](https://github.com/docker/build-push-action)
-- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- 🐛 [Issue #552 on docker/metadata-action](https://github.com/docker/metadata-action/issues/552)
+- 📦 [docker/metadata-action repository](https://github.com/docker/metadata-action)
+- 🔗 [Related closed issue #362](https://github.com/docker/metadata-action/issues/362)
