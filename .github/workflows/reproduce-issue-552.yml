@@ -1,0 +1,97 @@
+name: "Reproduce Issue #552 - Detached HEAD"
+
+# This workflow reproduces docker/metadata-action issue #552:
+# "Action fails: Cannot find detached HEAD ref in 'HEAD'"
+# https://github.com/docker/metadata-action/issues/552
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "The `some-repo` branch to use"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  DO_NOT_TRACK: "1"
+  REPOSITORY: "test-docker-metadata-action"
+
+jobs:
+  publish-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BRANCH: ${{ github.event.inputs.branch || 'main' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: "${{ github.repository_owner }}/${{ env.REPOSITORY }}"
+          ref: ${{ env.BRANCH }}
+          persist-credentials: false
+          lfs: true
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Get Git commit timestamp
+        run: |
+          echo "GIT_TIMESTAMP=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+          echo "GIT_SHA=$(git log -1 --format=%H)" >> "$GITHUB_ENV"
+
+      - name: Determine if branch is a SHA
+        id: check-sha
+        run: |
+          if git show-ref --verify -- refs/heads/${{ env.BRANCH }} >/dev/null 2>&1; then
+            echo "is_sha=false" >> "$GITHUB_OUTPUT"
+          elif git show-ref --verify -- refs/tags/${{ env.BRANCH }} >/dev/null 2>&1; then
+            echo "is_sha=false" >> "$GITHUB_OUTPUT"
+          else
+            # Check if it's a valid commit SHA
+            if git rev-parse --verify ${{ env.BRANCH }} >/dev/null 2>&1; then
+              echo "is_sha=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_sha=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Docker meta - workflow context
+        id: meta-workflow
+        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
+        with:
+          context: "workflow"
+          images: |
+            name=some-image
+          tags: |
+            type=raw,value=latest,enable=${{ env.BRANCH == 'main' && 'true' || 'false' }},priority=1001
+            type=ref,event=branch,enable=${{ !fromJSON(steps.check-sha.outputs.is_sha) }}
+            type=ref,event=tag,enable=${{ !fromJSON(steps.check-sha.outputs.is_sha) }}
+            type=schedule,enable=${{ github.event_name == 'schedule' }}
+            type=sha,enable=${{ fromJSON(steps.check-sha.outputs.is_sha) }},prefix=sha-
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
+        with:
+          context: "git"
+          images: |
+            name=some-image
+          tags: |
+            type=raw,value=latest,enable=${{ env.BRANCH == 'main' && 'true' || 'false' }},priority=1001
+            type=ref,event=branch,enable=${{ !fromJSON(steps.check-sha.outputs.is_sha) }}
+            type=ref,event=tag,enable=${{ !fromJSON(steps.check-sha.outputs.is_sha) }}
+            type=schedule,enable=${{ github.event_name == 'schedule' }}
+            type=sha,enable=${{ fromJSON(steps.check-sha.outputs.is_sha) }},prefix=sha-
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      - name: Export metadata to env
+        run: |
+          META_JSON='${{ steps.meta.outputs.json }}'
