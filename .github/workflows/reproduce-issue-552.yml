@@ -78,7 +78,7 @@ jobs:
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
+        uses: neilime/metadata-action@fix/missing-head-ref-in-git-context
         with:
           context: "git"
           images: |
